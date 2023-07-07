@@ -14,4 +14,3 @@ src/i386/*.oo
 src/i386/*.mod
 src/i386/*.moddep
 src/i386/pgprof.ccff/dock_prof64.ccff/*
-src/version.f*
