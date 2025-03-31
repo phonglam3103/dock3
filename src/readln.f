@@ -31,7 +31,6 @@ c     read  file, if present
 
    20 continue
       nlines = nlines - 1
-      close(runit)
       fail = .false.
       return
 
