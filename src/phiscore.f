@@ -31,49 +31,66 @@ c input variables
 c return variable
       real, intent(inout) :: potent(maxatm) !electrostatic potential at each atom
 
-      integer atomindex !actual position used
-      integer count !atom position counter
-      integer nx, ny, nz
-      real xn(3)
-      real a1, a2, a3, a4, a5, a6, a7, a8
-      real xgr, ygr, zgr
 
-c     loop over all atoms
-      do count = atomstart, atomend
-        atomindex = coord_index(2, count) !gets actual atom non-consecutive #
-c       scale atoms to grid space
-        xn(1) = (transfm_coords(1, atomindex) - 
-     &       oldmid(1)) * phiscale + goff
-        xn(2) = (transfm_coords(2, atomindex) -
-     &       oldmid(2)) * phiscale + goff
-        xn(3) = (transfm_coords(3, atomindex) - 
-     &       oldmid(3)) * phiscale + goff
+      integer :: i, n_in_block, block_idx, atomindex, count, nx, ny, nz
+      real :: x_tmp(8), y_tmp(8), z_tmp(8)
+      real :: xgr_tmp(8), ygr_tmp(8), zgr_tmp(8)
+      integer :: nx_tmp(8), ny_tmp(8), nz_tmp(8)
+      integer :: atom_idx_tmp(8)
+      real :: a_val(8, 8) ! [coeff_idx, atom_in_block]
 
-c       find lower left bottom grid point
-        nx = int(xn(1))
-        ny = int(xn(2))
-        nz = int(xn(3))
-c       $mem prefetch   phimap_precomp(1,nx,ny,nz)
+c     loop over all atoms in blocks of 8
+      do block_idx = atomstart, atomend, 8
+        n_in_block = min(8, atomend - block_idx + 1)
 
-c       calculate fractional cube coordinates of point
-        xgr = xn(1) - float(nx)
-        ygr = xn(2) - float(ny)
-        zgr = xn(3) - float(nz)
+        ! 1. Gather coordinates and compute grid indices
+        do i = 1, n_in_block
+          count = block_idx + i - 1
+          atomindex = coord_index(2, count)
+          atom_idx_tmp(i) = atomindex
+          
+          x_tmp(i) = (transfm_coords(1, atomindex) - oldmid(1)) 
+     &               * phiscale + goff
+          y_tmp(i) = (transfm_coords(2, atomindex) - oldmid(2)) 
+     &               * phiscale + goff
+          z_tmp(i) = (transfm_coords(3, atomindex) - oldmid(3)) 
+     &               * phiscale + goff
 
-c       calculate potential - speed optimized by {MC}
-c       pull coefficients of trilinear function from precomp
-        a8 = phimap_precomp(8, nx, ny, nz)
-        a7 = phimap_precomp(7, nx, ny, nz)
-        a6 = phimap_precomp(6, nx, ny, nz)
-        a5 = phimap_precomp(5, nx, ny, nz)
-        a4 = phimap_precomp(4, nx, ny, nz)
-        a3 = phimap_precomp(3, nx, ny, nz)
-        a2 = phimap_precomp(2, nx, ny, nz)
-        a1 = phimap_precomp(1, nx, ny, nz)
+          nx_tmp(i) = int(x_tmp(i))
+          ny_tmp(i) = int(y_tmp(i))
+          nz_tmp(i) = int(z_tmp(i))
 
-c       determine value of potential
-        potent(atomindex) = a1*xgr*ygr*zgr + a2*xgr*ygr + a3*xgr*zgr
-     &       + a4*ygr*zgr + a5*xgr + a6*ygr + a7*zgr + a8
+          xgr_tmp(i) = x_tmp(i) - float(nx_tmp(i))
+          ygr_tmp(i) = y_tmp(i) - float(ny_tmp(i))
+          zgr_tmp(i) = z_tmp(i) - float(nz_tmp(i))
+        enddo
+
+        ! 2. Gather interpolation coefficients
+        do i = 1, n_in_block
+          nx = nx_tmp(i)
+          ny = ny_tmp(i)
+          nz = nz_tmp(i)
+          ! These 8 values are contiguous in phimap_precomp
+          a_val(1, i) = phimap_precomp(1, nx, ny, nz)
+          a_val(2, i) = phimap_precomp(2, nx, ny, nz)
+          a_val(3, i) = phimap_precomp(3, nx, ny, nz)
+          a_val(4, i) = phimap_precomp(4, nx, ny, nz)
+          a_val(5, i) = phimap_precomp(5, nx, ny, nz)
+          a_val(6, i) = phimap_precomp(6, nx, ny, nz)
+          a_val(7, i) = phimap_precomp(7, nx, ny, nz)
+          a_val(8, i) = phimap_precomp(8, nx, ny, nz)
+        enddo
+
+        ! 3. Compute potential using FMA Factorization
+        do i = 1, n_in_block
+          atomindex = atom_idx_tmp(i)
+          potent(atomindex) = zgr_tmp(i) * (ygr_tmp(i) * 
+     &                        (xgr_tmp(i) * a_val(1,i) + a_val(4,i)) + 
+     &                        (xgr_tmp(i) * a_val(3,i) + a_val(7,i))) + 
+     &                        (ygr_tmp(i) * (xgr_tmp(i) * a_val(2,i) + 
+     &                        a_val(6,i)) + (xgr_tmp(i) * a_val(5,i) + 
+     &                        a_val(8,i)))
+        enddo
       enddo
 
       return

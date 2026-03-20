@@ -36,12 +36,18 @@ c input values
 c return values
       real, intent(inout) :: solvp, solva !polar and apolar desolvation
 
-      integer atomindex !actual atom index store here
-      integer count, lx, ly, lz
-      integer nx, ny, nz
-      real    slx, sly, slz, xgr, ygr, zgr
-      real    a1, a2, a3, a4, a5, a6, a7, a8
       real    volocl ! % desolvation based on sol. volume occluded by receptor.
+
+c     use precomputed values, removed hierarchy knowledge
+c     REMOVED OUTSIDE GRID CHECKS
+
+      integer :: i, n_in_block, block_idx, atomindex, count, nx, ny, nz
+      real :: slx_tmp(8), sly_tmp(8), slz_tmp(8)
+      real :: xgr_tmp(8), ygr_tmp(8), zgr_tmp(8)
+      integer :: nx_tmp(8), ny_tmp(8), nz_tmp(8)
+      integer :: atom_idx_tmp(8)
+      real :: a_val(8, 8) ! [coeff_idx, atom_in_block]
+      real :: volocl_tmp(8)
 
 c     use precomputed values, removed hierarchy knowledge
 c     REMOVED OUTSIDE GRID CHECKS
@@ -54,54 +60,91 @@ c     REMOVED OUTSIDE GRID CHECKS
       endif !otherwise ldesolv = 2, so use partial
       solvp = 0.0
       solva = 0.0
-      do count = atomstart, atomend !for every atom
-        atomindex = coord_index(2, count) !gets actual atom non-consecutive #
-        if (ldesolv .eq. 2) then !only if doing partial ligand desolvation
-          slx = smax(1) - transfm_coords(1, atomindex) * sperang
-          sly = smax(2) - transfm_coords(2, atomindex) * sperang
-          slz = smax(3) - transfm_coords(3, atomindex) * sperang
-          nx = int(slx)
-          ny = int(sly)
-          nz = int(slz)
-c         calculate partial cube coordinates of point
-          xgr = slx - float(nx)
-          ygr = sly - float(ny)
-          zgr = slz - float(nz)
-c         calculate coefficients of trilinear function
-          if (hsolflag .and. ((atom_vdwtype(atomindex) .eq. 6) .or.
-     &        (atom_vdwtype(atomindex) .eq. 7))) then !hydrogen atom 
-            a8 = hsolgrd_precomp(8, nx, ny, nz)
-            a7 = hsolgrd_precomp(7, nx, ny, nz)
-            a6 = hsolgrd_precomp(6, nx, ny, nz)
-            a5 = hsolgrd_precomp(5, nx, ny, nz)
-            a4 = hsolgrd_precomp(4, nx, ny, nz)
-            a3 = hsolgrd_precomp(3, nx, ny, nz)
-            a2 = hsolgrd_precomp(2, nx, ny, nz)
-            a1 = hsolgrd_precomp(1, nx, ny, nz)
-          else !heavy atom
-            a8 = solgrd_precomp(8, nx, ny, nz)
-            a7 = solgrd_precomp(7, nx, ny, nz)
-            a6 = solgrd_precomp(6, nx, ny, nz)
-            a5 = solgrd_precomp(5, nx, ny, nz)
-            a4 = solgrd_precomp(4, nx, ny, nz)
-            a3 = solgrd_precomp(3, nx, ny, nz)
-            a2 = solgrd_precomp(2, nx, ny, nz)
-            a1 = solgrd_precomp(1, nx, ny, nz)
-          endif
-c         interpolate values read from solvent grid
-          volocl = a1*xgr*ygr*zgr + a2*xgr*ygr + a3*xgr*zgr
-     &                   + a4*ygr*zgr + a5*xgr + a6*ygr + a7*zgr + a8
-          if (volocl .ge. 1.0 ) then !max is 1, means completely desolvated
-            write(*,*) "Warning: volocl (desolvation grid) > 1.0",volocl
-            volocl = 1.0
-          elseif ( volocl .lt. 0.0) then !max is 1, means completely desolvated
-            write(*,*) "Warning: volocl (desolvation grid) < 0.0",volocl
-            volocl = 0.0
-          endif
+
+      do block_idx = atomstart, atomend, 8
+        n_in_block = min(8, atomend - block_idx + 1)
+
+        ! 1. Gather coordinates and compute grid indices (only for ldesolv=2)
+        if (ldesolv .eq. 2) then
+          do i = 1, n_in_block
+            count = block_idx + i - 1
+            atomindex = coord_index(2, count)
+            atom_idx_tmp(i) = atomindex
+            
+            slx_tmp(i) = smax(1) - 
+     &                   transfm_coords(1, atomindex) * float(sperang)
+            sly_tmp(i) = smax(2) - 
+     &                   transfm_coords(2, atomindex) * float(sperang)
+            slz_tmp(i) = smax(3) - 
+     &                   transfm_coords(3, atomindex) * float(sperang)
+            
+            nx_tmp(i) = int(slx_tmp(i))
+            ny_tmp(i) = int(sly_tmp(i))
+            nz_tmp(i) = int(slz_tmp(i))
+
+            xgr_tmp(i) = slx_tmp(i) - float(nx_tmp(i))
+            ygr_tmp(i) = sly_tmp(i) - float(ny_tmp(i))
+            zgr_tmp(i) = slz_tmp(i) - float(nz_tmp(i))
+          enddo
+
+          ! 2. Gather interpolation coefficients
+          do i = 1, n_in_block
+            atomindex = atom_idx_tmp(i)
+            nx = nx_tmp(i)
+            ny = ny_tmp(i)
+            nz = nz_tmp(i)
+            
+            if (hsolflag .and. ((atom_vdwtype(atomindex) .eq. 6) .or.
+     &          (atom_vdwtype(atomindex) .eq. 7))) then !hydrogen atom 
+              a_val(1, i) = hsolgrd_precomp(1, nx, ny, nz)
+              a_val(2, i) = hsolgrd_precomp(2, nx, ny, nz)
+              a_val(3, i) = hsolgrd_precomp(3, nx, ny, nz)
+              a_val(4, i) = hsolgrd_precomp(4, nx, ny, nz)
+              a_val(5, i) = hsolgrd_precomp(5, nx, ny, nz)
+              a_val(6, i) = hsolgrd_precomp(6, nx, ny, nz)
+              a_val(7, i) = hsolgrd_precomp(7, nx, ny, nz)
+              a_val(8, i) = hsolgrd_precomp(8, nx, ny, nz)
+            else !heavy atom
+              a_val(1, i) = solgrd_precomp(1, nx, ny, nz)
+              a_val(2, i) = solgrd_precomp(2, nx, ny, nz)
+              a_val(3, i) = solgrd_precomp(3, nx, ny, nz)
+              a_val(4, i) = solgrd_precomp(4, nx, ny, nz)
+              a_val(5, i) = solgrd_precomp(5, nx, ny, nz)
+              a_val(6, i) = solgrd_precomp(6, nx, ny, nz)
+              a_val(7, i) = solgrd_precomp(7, nx, ny, nz)
+              a_val(8, i) = solgrd_precomp(8, nx, ny, nz)
+            endif
+          enddo
+
+          ! 3. Compute volocl using FMA Factorization
+          do i = 1, n_in_block
+            volocl_tmp(i) = zgr_tmp(i) * (ygr_tmp(i) * 
+     &                      (xgr_tmp(i) * a_val(1,i) + a_val(4,i)) + 
+     &                      (xgr_tmp(i) * a_val(3,i) + a_val(7,i))) + 
+     &                      (ygr_tmp(i) * (xgr_tmp(i) * a_val(2,i) + 
+     &                      a_val(6,i)) + (xgr_tmp(i) * a_val(5,i) + 
+     &                      a_val(8,i)))
+            
+            if (volocl_tmp(i) .ge. 1.0 ) then
+              volocl_tmp(i) = 1.0
+            elseif ( volocl_tmp(i) .lt. 0.0) then
+              volocl_tmp(i) = 0.0
+            endif
+          enddo
+        else ! ldesolv is 0 or 1
+          do i = 1, n_in_block
+            count = block_idx + i - 1
+            atom_idx_tmp(i) = coord_index(2, count)
+            volocl_tmp(i) = volocl
+          enddo
         endif
-        !write(*,*) "volocl (desolvation grid) = ", volocl
-        solvp = solvp - (atom_polsolv(atomindex) * volocl)
-        solva = solva - (atom_apolsolv(atomindex) * volocl)
+
+        ! 4. Sum up results
+        do i = 1, n_in_block
+          atomindex = atom_idx_tmp(i)
+          solvp = solvp-(atom_polsolv(atomindex)*volocl_tmp(i))
+          solva = solva-(atom_apolsolv(atomindex)*volocl_tmp(i))
+        enddo
       enddo
 
       return

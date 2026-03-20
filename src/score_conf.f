@@ -60,6 +60,7 @@ c return variables
       real recdes_energy(db2lig%total_atoms) !the receptor desolvation energy
             !of each atom, in kT (needs converted still)
       real ligdes_energy(db2lig%total_atoms) !ligand desolvation energy, kT
+      logical :: vdw_bumped !early exit flag from chemscore
 
 
       atomstart = db2lig%conf_coord(1, conf) !atom index of start
@@ -70,10 +71,11 @@ c return variables
      &    sra, srb, db2lig%atom_vdwtype,
      &    grids0%griddata(which_grid)%abval_precomp, vdwmap0%ngrd, 
      &    db2lig%total_atoms, db2lig%total_coords, maxtyv,
-     &    vdwasum, vdwbsum, numscored)
+     &    options0%bmpvdw, vdwasum, vdwbsum, numscored, vdw_bumped)
       !write(6,*) "calc_score:I AM HERE(1)" 
 c     sets vdwasum and vdwbsum (vdw scoring), increments numscored, reads others
-      if ((vdwasum - vdwbsum) .le. options0%bmpvdw) then !otherwise bump this group
+c     Now use the bumped flag from early exit instead of post-check
+      if (.not. vdw_bumped) then !otherwise bump this group
         if (options0%ldesolv .le. 2) then !none, full or old GB partial
           call calc_solvation_score(atomstart, atomend,
      &        db2lig%atom_vdwtype, db2lig%atom_polsolv, 

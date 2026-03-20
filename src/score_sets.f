@@ -67,18 +67,22 @@ c variables
       real, dimension(maxsets, grids0%total_combinations) :: 
      &     wholevs, wholees, wholegi, wholeas, wholeps, 
      &     wholeds,wholerd, wholehs, wholers, wholescore !score for all the grids (or just 1 if only 1) 
-      real, dimension(maxsets, options0%total_receptors) :: 
-     &    setvs, setes, setgi, setas, 
-     &    setps, setds, setrd, seths, setscore !scores per set (whole position)
-      real, dimension(maxconfs, options0%total_receptors) :: 
-     &    confvs, confes,confgi,confas,  !one for each scoring function except
-     &    confps, confds, confrd, confhs !internal energy and receptor
-      !energy do not have a per-conformation score
+      real, dimension(maxsets, options0%total_receptors) ::
+     &    setscore !scores per set (whole position)
+c     Packed array for better locality (Array of Structures)
+c     1:vdw, 2:es, 3:gi, 4:as, 5:ps, 6:ds, 7:rd, 8:hs
+      real, dimension(8, maxconfs, options0%total_receptors) :: 
+     &    conf_scores 
       integer, dimension(maxconfs, options0%total_receptors) :: 
      &    conf_status !track status of each conf
+      real, dimension(maxconfs, options0%total_receptors) ::
+     &    conf_weighted_total !pre-calculated weighted total score
+      real, dimension(maxsets, options0%total_receptors) ::
+     &    set_weighted_total !accumulated weighted total per set
       character (len=255) :: reccode
       integer, dimension(grids0%group_len) :: temp_combo !list of grids
       integer :: temp_combo_num !temporary counter for combinations
+      integer :: temp_combo_num_grid !temporary variable for grid index in combo
       integer :: tempcoord,tempatom,count
 c     ! this will store the list grid point already asigned to the molecule 
 c     integer,dimension(options0%total_receptors,10000) :: gistgridindex
@@ -95,6 +99,14 @@ c     just for debugging, jklyu, 2019.03.28
       integer atomcoord!used to find the right place to put things
 
       logical logged_tconf, logged_oconf
+c     2D bump cache for O(1) lookup: is_bumped(conf, grid)
+      logical, dimension(maxconfs, options0%total_receptors) ::
+     &    is_bumped
+      logical :: skip_set
+
+c     Initialize bump cache for all grids
+      is_bumped(:,:) = .false.
+      conf_weighted_total(:,:) = 0.0
 
       maingrid = grids0%group_part(1, 1) !do the invariant or only grid first
 
@@ -120,20 +132,17 @@ c      write(6,*) "conf_status before is",conf_status(tempconf, maingrid)
      &    db2lig, options0, grids0, maingrid,
      &    vdwmap0, phimap0, recdes0, ligdes0, gist0, solvmap0,
      &    rec_des_r0, match,
-     &    confvs(tempconf, maingrid), 
-     &    confes(tempconf, maingrid), 
-     &    confgi(tempconf, maingrid), 
-     &    confas(tempconf, maingrid), 
-     &    confps(tempconf, maingrid), 
-     &    confds(tempconf, maingrid),
-     &    confrd(tempconf, maingrid),
-     &    confhs(tempconf, maingrid),
+     &    conf_scores(1, tempconf, maingrid), 
+     &    conf_scores(2, tempconf, maingrid), 
+     &    conf_scores(3, tempconf, maingrid), 
+     &    conf_scores(4, tempconf, maingrid), 
+     &    conf_scores(5, tempconf, maingrid), 
+     &    conf_scores(6, tempconf, maingrid),
+     &    conf_scores(7, tempconf, maingrid),
+     &    conf_scores(8, tempconf, maingrid),
      &    allminlimits, allmaxlimits,
      &    sra, srb, 
      &    maxor, maxconfs, maxatm, maxatmpos, maxtyv, 
-c    &    ligscore%numscored, gistgridindex_cur_rec,
-c    &    ligscore%numscored, gistgridindex(:,tempconf,maingrid),
-c    &    lengistgi(tempconf,maingrid))
      &    ligscore%numscored,
      &    gistgridindex(:,tempconf,
      &        maingrid),
@@ -151,140 +160,55 @@ c     &                      db2lig%conf_conection(tempconf),
 c      write(6,*) "conf_status after is", conf_status(tempconf, maingrid)
 c      just for debugging turn off the rigidbump check
       if ((conf_status(tempconf, maingrid) .ne. ALLOKAY) .or. 
-     &    (confvs(tempconf, maingrid) .gt. 
+     &    (conf_scores(1, tempconf, maingrid) .gt. 
      &    options0%bmpvdwrigid)) then
         dock_status = BUMPED !the new version of bumping, rely on the vdw score
+c       Mark rigid conf as bumped in cache
+        is_bumped(tempconf, maingrid) = .true.
       else !the rigid component isn't terrible, go ahead and score
-        if ((setstart .eq. 1) .and. 
-     &      (setend .eq. db2lig%total_sets)) then
-          !not doing clouds, just do all confs at once, we'll need them all
-          do loopconf = 2, db2lig%total_confs !do all other confs
-            !for tempconf, rotate atoms in that conf in place. score them.
-            !save scores to confes, ..vs, ..ps, ..as
-            !gistgridindex_cur_rec = gistgridindex(:,maingrid)
-            tempconf = loopconf
-            oriconf = tempconf
-c           oriconf = db2lig%conf_conection(tempconf) 
-c           write(*,*) loopconf, "->", tempconf,
-c    &                 "->", oriconf
-            call doflush(OUTDOCK)
-            if (tempconf.eq.0) then
-               if (.not. logged_tconf) then ! really annoying when OUTDOCK is cluttered with things like this
-                    write(*,*) "total_confs =", db2lig%total_confs
-                    write(*,*) "Warning. tempconf = 0"
-                    write(*,*) loopconf, "->", tempconf,
-     &                 "->", oriconf
-                    call doflush(OUTDOCK)
-                    logged_tconf = .true.
-               endif
-               
-               tempconf = loopconf
-            else if (oriconf.eq.0) then
-               if (.not. logged_oconf) then
-                    write(*,*) "Warning. oriconf=0"
-                    write(*,*) loopconf, "->", tempconf,
-     &                 "->", oriconf
-                    call doflush(OUTDOCK)
-                    logged_oconf = .true.
-               endif
-               oriconf = tempconf
-            endif
-            
-            conf_status(tempconf, maingrid) = run_conf(
-     &          tempconf, current_match,
-     &          db2lig, options0, grids0, maingrid,
-     &          vdwmap0, phimap0, recdes0, ligdes0, gist0, solvmap0, 
-     &          rec_des_r0, match,
-     &          confvs(tempconf, maingrid), 
-     &          confes(tempconf, maingrid), 
-     &          confgi(tempconf, maingrid), 
-     &          confas(tempconf, maingrid), 
-     &          confps(tempconf, maingrid), 
-     &          confds(tempconf, maingrid),
-     &          confrd(tempconf, maingrid),
-     &          confhs(tempconf, maingrid),
-     &          allminlimits, allmaxlimits,
-     &          sra, srb, 
-     &          maxor, maxconfs, maxatm, maxatmpos, maxtyv, 
-c    &          ligscore%numscored,gistgridindex_cur_rec,
-c    &          ligscore%numscored,gistgridindex(:,tempconf,maingrid),
-c    &          lengistgi(tempconf,maingrid))
-     &          ligscore%numscored,
-     &          gistgridindex(:,tempconf,
-     &              maingrid),
-     &          lengistgi(tempconf,maingrid),
-     &          gistgridindex(:,
-c    &              db2lig%conf_conection(tempconf),
-     &              oriconf,
-     &              maingrid),
-c    &          lengistgi(db2lig%conf_conection(tempconf),
-     &          lengistgi(oriconf,
-     &              maingrid))
-
+c       LAZY EVALUATION: Only score confs on-demand during set iteration
+c       Mark all non-rigid confs as NOTCHECKED - they will be scored
+c       when first encountered in the set loop below
+        do loopconf = 2, db2lig%total_confs
+          do flexgrid = 1, options0%total_receptors
+            conf_status(loopconf, flexgrid) = NOTCHECKED
           enddo
-          if (options0%flexible_receptor) then !may want to score more
-            do loopconf = 1, db2lig%total_confs !do all other confs
-              tempconf = loopconf
-c              write(*,*) "tempconf (sorted) = ",tempconf
-c     &                  ,"loopconf = ", loopconf      
-              if (conf_status(tempconf, maingrid) .eq. ALLOKAY) then
-                do flexgrid = 2, options0%total_receptors !all other recs
-                  !gistgridindex_cur_rec = gistgridindex(:,flexgrid)
-                  conf_status(tempconf, flexgrid) = run_conf(
-     &                tempconf, current_match,
-     &                db2lig, options0, grids0, flexgrid,
-     &                vdwmap0, phimap0, recdes0, ligdes0, gist0,
-     &                solvmap0, rec_des_r0, match,
-     &                confvs(tempconf, flexgrid), 
-     &                confes(tempconf, flexgrid), 
-     &                confgi(tempconf, flexgrid), 
-     &                confas(tempconf, flexgrid), 
-     &                confps(tempconf, flexgrid), 
-     &                confds(tempconf, flexgrid),
-     &                confrd(tempconf, flexgrid),
-     &                confhs(tempconf, flexgrid),
-     &                allminlimits, allmaxlimits,
-     &                sra, srb, 
-     &                maxor, maxconfs, maxatm, maxatmpos, maxtyv, 
-c    &                ligscore%numscored,gistgridindex_cur_rec,
-     &                ligscore%numscored,gistgridindex(:,tempconf,
-     &                    flexgrid),
-     &                lengistgi(tempconf,flexgrid),
-     &                gistgridindex(:,
-c     &                      db2lig%conf_conection(tempconf),
-     &                      tempconf,
-     &                    flexgrid),
-     &                lengistgi(
-c     &                      db2lig%conf_conection(tempconf),
-     &                      tempconf,
-     &                    flexgrid))
-                enddo
-              endif
-            enddo
-          endif
-          !all conformations have been scored if possible
-        else !we only need some of them.. don't do unnecessary work
-          !only do for necessary confs, so mark all as undone for now
-          do loopconf = 2, db2lig%total_confs !do all other confs
-            tempconf = loopconf
-            do flexgrid = 1, options0%total_receptors !for all of them
-              conf_status(tempconf, flexgrid) = NOTCHECKED !set to this, check later
-            enddo
-          enddo
-        endif
+        enddo
         do flexgrid = 1, options0%total_receptors !go through every grid & 
                             !set, assemble scores for each combination
-          set_status = NOTCHECKED !temporary for this set
+c         Note: is_bumped is now initialized at start, not reset per grid
+c         Skip entire set loop if rigid conf (conf 1) bumped on this grid
+          if (is_bumped(1, flexgrid)) then
+            dock_status = BUMPED
+c           Mark all sets as not good for this grid
+            do tempset = setstart, setend
+              goodset(tempset, flexgrid) = .false.
+            enddo
+            cycle
+          endif
+            set_status = NOTCHECKED !temporary for this set
           do tempset = setstart, setend !going through every set as well
+            skip_set = .false.
+
+c           Pre-scan: Check if any conformation in this set is already known to be bumped
+            do tempconfnum = 2, db2lig%set_conf_len(tempset)
+              tempconf = db2lig%set_conf(tempset, tempconfnum)
+              if (is_bumped(tempconf, flexgrid)) then
+                 skip_set = .true.
+                 exit
+              endif
+            enddo
+
+            if (skip_set) then
+              set_status = BUMPED
+              dock_status = BUMPED
+              goodset(tempset, flexgrid) = .false.
+              cycle ! Skip to next set
+            endif
+
             !add up scores from each conf to find the best one.
-            setvs(tempset, flexgrid) = 0. !set to 0
-            setes(tempset, flexgrid) = 0.
-            setgi(tempset, flexgrid) = 0.
-            setps(tempset, flexgrid) = 0.
-            setas(tempset, flexgrid) = 0.
-            setds(tempset, flexgrid) = 0.
-            setrd(tempset, flexgrid) = 0.
-            seths(tempset, flexgrid) = 0.
+c           Init weighted total
+            set_weighted_total(tempset, flexgrid) = 0.
             !broken/clashed check on next line, if necessary
             if ((db2lig%set_broken(tempset) .eq. 0) .or. 
      &            (options0%check_clash .eqv. .false.)) then 
@@ -293,23 +217,27 @@ c     &                      db2lig%conf_conection(tempconf),
                 set_status = ALLOKAY
                 do tempconfnum = 1, db2lig%set_conf_len(tempset)
                   tempconf = db2lig%set_conf(tempset, tempconfnum)
+c                 Check bump cache first (O(1) lookup)
+                  if (is_bumped(tempconf, flexgrid)) then
+                    set_status = BUMPED
+                    exit
+                  endif
                   !build on the fly if necessary
                   if (conf_status(tempconf, flexgrid) .eq. 
      &                NOTCHECKED) then !if it hasn't been checked already
-                    !gistgridindex_cur_rec = gistgridindex(:,flexgrid)
                     conf_status(tempconf, flexgrid) = run_conf(
      &                  tempconf, current_match,
      &                  db2lig, options0, grids0, flexgrid,
      &                  vdwmap0, phimap0, recdes0, ligdes0, gist0,
      &                  solvmap0, rec_des_r0, match,
-     &                  confvs(tempconf, flexgrid), 
-     &                  confes(tempconf, flexgrid), 
-     &                  confgi(tempconf, flexgrid), 
-     &                  confas(tempconf, flexgrid), 
-     &                  confps(tempconf, flexgrid), 
-     &                  confds(tempconf, flexgrid),
-     &                  confrd(tempconf, flexgrid),
-     &                  confhs(tempconf, flexgrid),
+     &                  conf_scores(1, tempconf, flexgrid), 
+     &                  conf_scores(2, tempconf, flexgrid), 
+     &                  conf_scores(3, tempconf, flexgrid), 
+     &                  conf_scores(4, tempconf, flexgrid), 
+     &                  conf_scores(5, tempconf, flexgrid), 
+     &                  conf_scores(6, tempconf, flexgrid),
+     &                  conf_scores(7, tempconf, flexgrid),
+     &                  conf_scores(8, tempconf, flexgrid),
      &                  allminlimits, allmaxlimits,
      &                  sra, srb, 
      &                  maxor, maxconfs, maxatm, maxatmpos, maxtyv, 
@@ -326,27 +254,41 @@ c     &                      db2lig%conf_conection(tempconf),
      &                      tempconf,
      &                      flexgrid))
                   endif             
-
-                  if (conf_status(tempconf, flexgrid) .ne. ALLOKAY) then
+                  
+                  if (conf_status(tempconf, flexgrid) .eq. ALLOKAY) then
+c                   Algorithm 6: Pre-calculate weighted total
+c                   Split lines to respect 72-col limit
+                    conf_weighted_total(tempconf, flexgrid) = 
+     &               conf_scores(1, tempconf, flexgrid)*options0%vscale+
+     &               conf_scores(2, tempconf, flexgrid)*options0%escale+
+     &               conf_scores(3, tempconf, flexgrid)*
+     &                                          options0%gistscale+
+     &               conf_scores(5, tempconf, flexgrid)*
+     &                                          options0%solvscale+
+     &               conf_scores(4, tempconf, flexgrid)*
+     &                                          options0%solvscale
+                    conf_weighted_total(tempconf, flexgrid) = 
+     &                 conf_weighted_total(tempconf, flexgrid) +
+     &                 conf_scores(6, tempconf, flexgrid)*
+     &                                          options0%rdscale +
+     &                 conf_scores(7, tempconf, flexgrid)* 
+     &                                          options0%rec_des_scale +
+     &                 conf_scores(8, tempconf, flexgrid)*
+     &                                          options0%rhscale
+                  
+                  else if (conf_status(tempconf, flexgrid) .ne. 
+     &                 ALLOKAY) then
                     set_status = conf_status(tempconf, flexgrid)
+c                   Mark conf as bumped for O(1) cache lookup
+                    if (conf_status(tempconf,flexgrid).eq.BUMPED) then
+                      is_bumped(tempconf, flexgrid) = .true.
+                    endif
                     exit !break out of loop for this set
                   endif
-                  setvs(tempset, flexgrid) = setvs(tempset, flexgrid) + 
-     &                confvs(tempconf, flexgrid)
-                  setes(tempset, flexgrid) = setes(tempset, flexgrid) + 
-     &                confes(tempconf, flexgrid)
-                  setgi(tempset, flexgrid) = setgi(tempset, flexgrid) + 
-     &                confgi(tempconf, flexgrid)
-                  setps(tempset, flexgrid) = setps(tempset, flexgrid) + 
-     &                confps(tempconf, flexgrid)
-                  setas(tempset, flexgrid) = setas(tempset, flexgrid) +
-     &                confas(tempconf, flexgrid)
-                  setds(tempset, flexgrid) = setds(tempset, flexgrid) + 
-     &                confds(tempconf, flexgrid)
-                  setrd(tempset, flexgrid) = setrd(tempset, flexgrid) + 
-     &                confrd(tempconf, flexgrid)
-                  seths(tempset, flexgrid) = seths(tempset, flexgrid) + 
-     &                confhs(tempconf, flexgrid)
+c                 Optimized inner loop: accumulate only the weighted total
+                  set_weighted_total(tempset, flexgrid) = 
+     &                 set_weighted_total(tempset, flexgrid) + 
+     &                 conf_weighted_total(tempconf, flexgrid)
                 enddo
               else !above strain
                 set_status = STRAIN
@@ -359,33 +301,10 @@ c     &                      db2lig%conf_conection(tempconf),
             goodset(tempset, flexgrid) = .false.
             if (set_status .eq. ALLOKAY) then !each conf scored
               goodset(tempset, flexgrid) = .true.
-              !moved scaling to here for grids stuff, internal energy is 
-              !done when it is read in
-              setvs(tempset, flexgrid) = options0%vscale * 
-     &            setvs(tempset, flexgrid)
-              setes(tempset, flexgrid) = options0%escale * 
-     &            setes(tempset, flexgrid)
-              setgi(tempset, flexgrid) = options0%gistscale * 
-     &            setgi(tempset, flexgrid)
-              setas(tempset, flexgrid) = options0%solvscale * 
-     &            setas(tempset, flexgrid)
-              setps(tempset, flexgrid) = options0%solvscale * 
-     &            setps(tempset, flexgrid)
-              setds(tempset, flexgrid) = options0%rdscale * 
-     &            setds(tempset, flexgrid)
-              setrd(tempset, flexgrid) = options0%rec_des_scale * 
-     &            setrd(tempset, flexgrid)
-              seths(tempset, flexgrid) = options0%rhscale * 
-     &            seths(tempset, flexgrid)
-              setscore(tempset, flexgrid) = setvs(tempset, flexgrid) 
-     &            + setes(tempset, flexgrid)
-     &            + setgi(tempset, flexgrid)
-     &            + setps(tempset, flexgrid) + setas(tempset, flexgrid) 
-     &            + db2lig%set_energy(tempset) 
-     &            + setds(tempset, flexgrid)
-     &            + setrd(tempset, flexgrid)
-     &            + seths(tempset, flexgrid)
-     &            + options0%rec_energy(flexgrid)
+              setscore(tempset, flexgrid) = 
+     &            set_weighted_total(tempset, flexgrid) + 
+     &            db2lig%set_energy(tempset) + 
+     &            options0%rec_energy(flexgrid)
             endif
           enddo      
         enddo
@@ -406,41 +325,93 @@ c     &                      db2lig%conf_conection(tempconf),
             wholescore(tempset, temp_combo_num) = 0.
             do flexgrid = 1, grids0%group_len
               if (goodset(tempset, temp_combo(flexgrid))) then
-                wholevs(tempset, temp_combo_num) = 
-     &              wholevs(tempset, temp_combo_num) + 
-     &              setvs(tempset, temp_combo(flexgrid))
-                wholees(tempset, temp_combo_num) = 
-     &              wholees(tempset, temp_combo_num) + 
-     &              setes(tempset, temp_combo(flexgrid))
-               wholegi(tempset, temp_combo_num) =
-     &              wholegi(tempset, temp_combo_num) +
-     &              setgi(tempset, temp_combo(flexgrid))
-                wholeas(tempset, temp_combo_num) = 
-     &              wholeas(tempset, temp_combo_num) + 
-     &              setas(tempset, temp_combo(flexgrid))
-                wholeps(tempset, temp_combo_num) = 
-     &              wholeps(tempset, temp_combo_num) + 
-     &              setps(tempset, temp_combo(flexgrid))
-                wholeds(tempset, temp_combo_num) = 
-     &              wholeds(tempset, temp_combo_num) + 
-     &              setds(tempset, temp_combo(flexgrid))
-                wholerd(tempset, temp_combo_num) = 
-     &              wholerd(tempset, temp_combo_num) + 
-     &              setrd(tempset, temp_combo(flexgrid))
-                wholehs(tempset, temp_combo_num) = 
-     &              wholehs(tempset, temp_combo_num) + 
-     &              seths(tempset, temp_combo(flexgrid))
-                wholers(tempset, temp_combo_num) = 
-     &              wholers(tempset, temp_combo_num) + 
-     &              options0%rec_energy(temp_combo(flexgrid)) !note difference!!
+c               Use weighted total for quick check
+c               Note: We removed setvs, setes etc intermediate arrays.
+c               Only accumulate wholescore here for checking.
+c               Components will be reconstructed later if good.
                 wholescore(tempset, temp_combo_num) = 
      &              wholescore(tempset, temp_combo_num) + 
-     &              setscore(tempset, temp_combo(flexgrid))
+     &              set_weighted_total(tempset, temp_combo(flexgrid)) +
+     &              options0%rec_energy(temp_combo(flexgrid))
               else
                 goodwhole = .false.
                 exit !break out, no need to do more
               endif
             enddo
+c           Add set_energy to complete the wholescore
+            if (goodwhole) then
+                 wholescore(tempset, temp_combo_num) = 
+     &              wholescore(tempset, temp_combo_num) +
+     &              db2lig%set_energy(tempset)
+
+c             Lazy check against cutoff
+c             Note: ligscore%pose_score is sorted best (lowest) to worst.
+c             ligscore%savedcount is the number of saved poses.
+c             We want to save if buffer is not full OR if score is better than worst.
+              if ((ligscore%savedcount .lt. options0%nsav) .or. 
+     &            (wholescore(tempset, temp_combo_num) .lt. 
+     &             ligscore%pose_score(ligscore%savedcount))) then
+
+c               It's a top hit! Reconstruct component scores now.
+                do flexgrid = 1, grids0%group_len
+                   temp_combo_num_grid = temp_combo(flexgrid)
+
+                   do tempconfnum=1, db2lig%set_conf_len(tempset)
+                      tempconf = db2lig%set_conf(tempset, tempconfnum)
+                      
+                      wholevs(tempset, temp_combo_num) = 
+     &                   wholevs(tempset, temp_combo_num) + 
+     &                   conf_scores(1, tempconf, temp_combo_num_grid) * 
+     &                   options0%vscale
+
+                      wholees(tempset, temp_combo_num) = 
+     &                   wholees(tempset, temp_combo_num) + 
+     &                   conf_scores(2, tempconf, temp_combo_num_grid) * 
+     &                   options0%escale
+
+                      wholegi(tempset, temp_combo_num) =
+     &                   wholegi(tempset, temp_combo_num) +
+     &                   conf_scores(3, tempconf, temp_combo_num_grid) * 
+     &                   options0%gistscale
+
+                      wholeas(tempset, temp_combo_num) = 
+     &                   wholeas(tempset, temp_combo_num) +
+     &                   conf_scores(4, tempconf, temp_combo_num_grid) * 
+     &                   options0%solvscale
+
+                      wholeps(tempset, temp_combo_num) = 
+     &                   wholevs(tempset, temp_combo_num) + 
+     &                   conf_scores(5, tempconf, temp_combo_num_grid) * 
+     &                   options0%solvscale
+
+                      wholeds(tempset, temp_combo_num) = 
+     &                   wholeds(tempset, temp_combo_num) + 
+     &                   conf_scores(6, tempconf, temp_combo_num_grid) * 
+     &                   options0%rdscale
+
+                      wholerd(tempset, temp_combo_num) = 
+     &                   wholerd(tempset, temp_combo_num) + 
+     &                   conf_scores(7, tempconf, temp_combo_num_grid) * 
+     &                   options0%rec_des_scale
+
+                      wholehs(tempset, temp_combo_num) = 
+     &                   wholehs(tempset, temp_combo_num) + 
+     &                   conf_scores(8, tempconf, temp_combo_num_grid) * 
+     &                   options0%rhscale
+                   enddo
+                   
+                   ! Add receptor energy for this grid
+                   wholers(tempset, temp_combo_num) = 
+     &                wholers(tempset, temp_combo_num) + 
+     &                options0%rec_energy(temp_combo_num_grid)
+
+                enddo 
+                
+              else
+                 goodwhole = .false. ! Mark as bad to skip saving block below
+              endif
+            endif ! end lazy check block
+
             if (goodwhole) then !don't save if not good
               onegood = .true. ! there is at least one that is good. 
 
@@ -461,56 +432,6 @@ c     &                      db2lig%conf_conection(tempconf),
                      enddo
                   enddo
                endif
-c              write(6,*) current_match, " ", tempset, " ",
-c     &            wholescore(tempset, temp_combo_num)," ",
-c     &            wholevs(tempset, temp_combo_num)
-c              debug, jklyu, 2019.03.28
-c              open(unit=OUTPDB, 
-c     &        file='test.pdb', action='write')
-c             for debugging, transfm the whole set based on the match
-c              do confcount = 1, db2lig%set_conf_len(tempset) !sets of complete conformations
-c                 conf = db2lig%set_conf(tempset, confcount)
-c                 !each conf needs to transform the coordinates to the right place
-c                 call run_transfm_conf(conf, current_match, db2lig,
-c     &                match, maxor)  !match-picked transformation
-c              enddo
-c              write(6,"(A18,I6,A10,I4,F6.2,F6.2)") 
-c     &            "REMARK match_num: ",
-c     &            current_match,
-c     &            " set_num: ", tempset,
-c     &            wholescore(tempset, temp_combo_num),
-c     &            wholevs(tempset, temp_combo_num)
-c             the codes below are trying to write out the whole molecule
-c              do atomcount = 1, db2lig%total_atoms
-c                write(6, PDBFORM) "ATOM  ",
-c     &           db2lig%atom_num(atomcount),
-c     &           db2lig%atom_name(atomcount), "","LIG", "A", 1,
-c     &           "", db2lig%transfm_coords(1, atomcount),
-c     &           db2lig%transfm_coords(2, atomcount),
-c     &           db2lig%transfm_coords(3, atomcount),
-c     &           0.00, 0.00,
-c     &           db2lig%atom_name(atomcount), ""
-c              enddo
-c              write(6,*) "ENDMDL"
-c             the codes below are trying to write out the rigid
-c             fragment for each molecule
-c             frist conf is the rigid fragment
-c              do atomcoord = db2lig%conf_coord(1, 1), 
-c     &             db2lig%conf_coord(2, 1)
-c                atomcount = db2lig%coord_index(2, atomcoord)
-c                write(6, PDBFORM) "ATOM  ",
-c     &           db2lig%atom_num(atomcount),
-c     &           db2lig%atom_name(atomcount), "","LIG", "A", 1,
-c     &           "", db2lig%transfm_coords(1, atomcount),
-c     &           db2lig%transfm_coords(2, atomcount),
-c     &           db2lig%transfm_coords(3, atomcount),
-c     &           0.00, 0.00,
-c     &           db2lig%atom_name(atomcount), ""
-c              enddo
-c              write(6,"(A6)") "ENDMDL"
-
-c             write(6,*) tempset, db2lig%set_max_strain(tempset),
-c    &                   db2lig%set_total_strain(tempset) 
               call save_set_score(ligscore, current_match, tempset, 
      &            wholevs(tempset, temp_combo_num), 
      &            wholees(tempset, temp_combo_num), 

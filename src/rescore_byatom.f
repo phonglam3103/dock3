@@ -52,6 +52,7 @@ c      real :: gist !hydrophobic effect
       integer :: numscored !keeps track of how many atom positions are evaluated
       integer :: which_grid, count_grid !which grids to use
       integer :: conf, confcount !which conf currently being examined
+      logical :: vdw_bumped !unused, for chemscore interface compatibility
 
       do confcount = 1, db2lig%set_conf_len(setcount)
         conf = db2lig%set_conf(setcount, confcount)
@@ -83,7 +84,7 @@ c          solvd = 0.0
      &          sra, srb, db2lig%atom_vdwtype,
      &          grids0%griddata(which_grid)%abval_precomp, vdwmap0%ngrd, 
      &          db2lig%total_atoms, db2lig%total_coords, maxtyv,
-     &          asum, bsum, numscored)
+     &          1.0e30, asum, bsum, numscored, vdw_bumped)
             vdwasum = vdwasum + asum
             vdwbsum = vdwbsum + bsum
             if (options0%ldesolv .le. 2) then !full, none or GB partial

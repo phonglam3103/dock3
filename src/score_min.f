@@ -62,7 +62,7 @@ c      real :: gist !hydrophobic effect
       integer, intent(in) :: which_grid ! the grid number 
       integer :: count_grid !which grids to use
       integer :: confcount, atomcount, coordcount !which conf currently being examined
-
+      logical :: vdw_bumped !unused, for chemscore interface compatibility
 
       vdwasum = 0.0
       vdwbsum = 0.0
@@ -77,13 +77,14 @@ c      solvd = 0.0
       atomend = db2lig%conf_coord(2, conf) !same but end (2)
       !print *, 'atomstart=', atomstart
       !print *, 'atomend=', atomend
+c     For minimizer, use huge bmpvdw to disable early exit (need full scoring)
       call calc_chemscore(atomstart, atomend,
      &    db2lig%coord_index, db2lig%transfm_coords, vdwmap0%offset,
      &    vdwmap0%invgrid, vdwmap0%grdpts,
      &    sra, srb, db2lig%atom_vdwtype,
      &    grids0%griddata(which_grid)%abval_precomp, vdwmap0%ngrd,
      &    db2lig%total_atoms, db2lig%total_coords, maxtyv,
-     &    vdwasum, vdwbsum, numscored)
+     &    1.0e30, vdwasum, vdwbsum, numscored, vdw_bumped)
 
 
 c      if ((vdwasum - vdwbsum) .le. options0%bmpvdw) then !otherwise bump this group

@@ -16,7 +16,7 @@ c------------------------------------------------------------------------
      &    sra, srb, atom_vdwtype,
      &    abval_precomp, ngrd, 
      &    maxatm, maxatmpos, maxtyv, 
-     &    vdwasum, vdwbsum, numscored)
+     &    bmpvdw, vdwasum, vdwbsum, numscored, bumped)
 
       use vdwconsts
 
@@ -37,90 +37,113 @@ c input variables
       real, intent(in) :: abval_precomp(2, 8, ngrd) !actual grid values of vdw scores,
           ! precomputed a la the Carchia optimizations
       integer, intent(in) :: ngrd !how many grid points there are, dynamically changes each run
+      real, intent(in) :: bmpvdw !bump threshold for early exit
 c return values
       real, intent(inout) :: vdwasum, vdwbsum !where to put scores
       integer, intent(inout) :: numscored !keeps track of how many atom positions are evaluated
+      logical, intent(out) :: bumped !true if early exit due to bump
 
-c temporary variables
-      integer atomindex !actual location of atom
-      integer count, array_index
-      real a1, a2, a3, a4, a5, a6, a7, a8
-      integer nx, ny, nz
-      real xn(3), xgr, ygr, zgr
-c       xn - grid coordinates of ligand atom
-c       xgr, ygr, zgr - fractional cube coordinates
-      real apt, bpt
-c       apt, bpt: interpolated grid values
       real avdw, bvdw
 c       avdw: vdw repulsion energy of a ligand atom
 c       bvdw: vdw dispersion energy of a ligand atom
-c     abval_precomp declared locally so that dimensions of array can be 
-c     known.  This is a dynamically allocated array and thus the common 
-c     block does not know its size. except it does. so it isn't redeclared.
-c      real abval_precomp(2,8,ngrd)
+
+      integer :: i, n_in_block, block_idx, atomindex, count, array_index
+      real :: x_tmp(8), y_tmp(8), z_tmp(8)
+      real :: xgr_tmp(8), ygr_tmp(8), zgr_tmp(8)
+      integer :: nx_tmp(8), ny_tmp(8), nz_tmp(8)
+      integer :: array_idx_tmp(8)
+      integer :: atom_idx_tmp(8)
+      real :: a_val(8, 8), b_val(8, 8) ! [coeff_idx, atom_in_block]
+      real :: apt_tmp(8), bpt_tmp(8)
 
       vdwasum = 0.0
       vdwbsum = 0.0
-      do count = atomstart, atomend !for every atom
-        atomindex = coord_index(2, count) !gets actual atom non-consecutive #
-c       scale atoms to grid space
-c       optimization {MC}: use multiplication instead of division
-        xn(1) = (transfm_coords(1, atomindex) - offset(1)) * invgrid
-        xn(2) = (transfm_coords(2, atomindex) - offset(2)) * invgrid
-        xn(3) = (transfm_coords(3, atomindex) - offset(3)) * invgrid
+      bumped = .false.
 
-c       find lower left bottom grid point
-        nx = int(xn(1))
-        ny = int(xn(2))
-        nz = int(xn(3))
-         
-c       calculate fractional cube coordinates of point
-        xgr = xn(1) - float(nx)
-        ygr = xn(2) - float(ny)
-        zgr = xn(3) - float(nz)
+      do block_idx = atomstart, atomend, 8
+        n_in_block = min(8, atomend - block_idx + 1)
 
-c       get index into precomputed interpolation array
-        array_index = grdpts(1)*grdpts(2)*nz + 
-     &         grdpts(1)*ny + nx + 1
+        ! 1. Gather coordinates and compute grid indices
+        do i = 1, n_in_block
+          count = block_idx + i - 1
+          atomindex = coord_index(2, count)
+          atom_idx_tmp(i) = atomindex
+          
+          x_tmp(i) = (transfm_coords(1, atomindex) - offset(1)) 
+     &               * invgrid
+          y_tmp(i) = (transfm_coords(2, atomindex) - offset(2)) 
+     &               * invgrid
+          z_tmp(i) = (transfm_coords(3, atomindex) - offset(3)) 
+     &               * invgrid
 
-c       calculate vdw a term - speed optimized by {MC}
-c       pull coefficients of trilinear function from precomp
-        a1 = abval_precomp(AVAL_INDEX, 1, array_index)
-        a2 = abval_precomp(AVAL_INDEX, 2, array_index)
-        a3 = abval_precomp(AVAL_INDEX, 3, array_index)
-        a4 = abval_precomp(AVAL_INDEX, 4, array_index)
-        a5 = abval_precomp(AVAL_INDEX, 5, array_index)
-        a6 = abval_precomp(AVAL_INDEX, 6, array_index)
-        a7 = abval_precomp(AVAL_INDEX, 7, array_index)
-        a8 = abval_precomp(AVAL_INDEX, 8, array_index)
+          nx_tmp(i) = int(x_tmp(i))
+          ny_tmp(i) = int(y_tmp(i))
+          nz_tmp(i) = int(z_tmp(i))
 
-c       determine interpolated VDW repulsion factor
-        apt = a1*xgr*ygr*zgr + a2*xgr*ygr +
-     &         a3*xgr*zgr + a4*ygr*zgr + a5*xgr +
-     &         a6*ygr + a7*zgr + a8
+          xgr_tmp(i) = x_tmp(i) - float(nx_tmp(i))
+          ygr_tmp(i) = y_tmp(i) - float(ny_tmp(i))
+          zgr_tmp(i) = z_tmp(i) - float(nz_tmp(i))
 
-c       calculate vdw b term  - speed optimized by {MC}
-        a1 = abval_precomp(BVAL_INDEX, 1, array_index)
-        a2 = abval_precomp(BVAL_INDEX, 2, array_index)
-        a3 = abval_precomp(BVAL_INDEX, 3, array_index)
-        a4 = abval_precomp(BVAL_INDEX, 4, array_index)
-        a5 = abval_precomp(BVAL_INDEX, 5, array_index)
-        a6 = abval_precomp(BVAL_INDEX, 6, array_index)
-        a7 = abval_precomp(BVAL_INDEX, 7, array_index)
-        a8 = abval_precomp(BVAL_INDEX, 8, array_index)
+          array_idx_tmp(i) = grdpts(1)*grdpts(2)*nz_tmp(i) + 
+     &                       grdpts(1)*ny_tmp(i) + nx_tmp(i) + 1
+        enddo
 
-c       determine interpolated VDW dispersion factor
-        bpt = a1*xgr*ygr*zgr + a2*xgr*ygr +
-     &         a3*xgr*zgr + a4*ygr*zgr + a5*xgr +
-     &         a6*ygr + a7*zgr + a8
+        ! 2. Gather interpolation coefficients
+        do i = 1, n_in_block
+          array_index = array_idx_tmp(i)
+          ! AVAL coefficients
+          a_val(1, i) = abval_precomp(AVAL_INDEX, 1, array_index)
+          a_val(2, i) = abval_precomp(AVAL_INDEX, 2, array_index)
+          a_val(3, i) = abval_precomp(AVAL_INDEX, 3, array_index)
+          a_val(4, i) = abval_precomp(AVAL_INDEX, 4, array_index)
+          a_val(5, i) = abval_precomp(AVAL_INDEX, 5, array_index)
+          a_val(6, i) = abval_precomp(AVAL_INDEX, 6, array_index)
+          a_val(7, i) = abval_precomp(AVAL_INDEX, 7, array_index)
+          a_val(8, i) = abval_precomp(AVAL_INDEX, 8, array_index)
+          
+          ! BVAL coefficients
+          b_val(1, i) = abval_precomp(BVAL_INDEX, 1, array_index)
+          b_val(2, i) = abval_precomp(BVAL_INDEX, 2, array_index)
+          b_val(3, i) = abval_precomp(BVAL_INDEX, 3, array_index)
+          b_val(4, i) = abval_precomp(BVAL_INDEX, 4, array_index)
+          b_val(5, i) = abval_precomp(BVAL_INDEX, 5, array_index)
+          b_val(6, i) = abval_precomp(BVAL_INDEX, 6, array_index)
+          b_val(7, i) = abval_precomp(BVAL_INDEX, 7, array_index)
+          b_val(8, i) = abval_precomp(BVAL_INDEX, 8, array_index)
+        enddo
 
-c       compute final vdw terms
-        avdw = sra(atom_vdwtype(atomindex)) * apt 
-        bvdw = srb(atom_vdwtype(atomindex)) * bpt
+        ! 3. Compute interpolated values using FMA Factorization
+        do i = 1, n_in_block
+          apt_tmp(i) = zgr_tmp(i) * (ygr_tmp(i) * 
+     &                 (xgr_tmp(i) * a_val(1,i) + a_val(4,i)) + 
+     &                 (xgr_tmp(i) * a_val(3,i) + a_val(7,i))) + 
+     &                 (ygr_tmp(i) * (xgr_tmp(i) * a_val(2,i) + 
+     &                 a_val(6,i)) + (xgr_tmp(i) * a_val(5,i) + 
+     &                 a_val(8,i)))
 
-c       sum vdw terms
-        vdwasum = vdwasum + avdw
-        vdwbsum = vdwbsum + bvdw
+          bpt_tmp(i) = zgr_tmp(i) * (ygr_tmp(i) * 
+     &                 (xgr_tmp(i) * b_val(1,i) + b_val(4,i)) + 
+     &                 (xgr_tmp(i) * b_val(3,i) + b_val(7,i))) + 
+     &                 (ygr_tmp(i) * (xgr_tmp(i) * b_val(2,i) + 
+     &                 b_val(6,i)) + (xgr_tmp(i) * b_val(5,i) + 
+     &                 b_val(8,i)))
+        enddo
+
+        ! 4. Sum up the results
+        do i = 1, n_in_block
+          atomindex = atom_idx_tmp(i)
+          avdw = sra(atom_vdwtype(atomindex)) * apt_tmp(i) 
+          bvdw = srb(atom_vdwtype(atomindex)) * bpt_tmp(i)
+          vdwasum = vdwasum + avdw
+          vdwbsum = vdwbsum + bvdw
+        enddo
+
+        ! EARLY EXIT: Check if bumped after each block
+        if ((vdwasum - vdwbsum) .gt. bmpvdw) then
+          bumped = .true.
+          numscored = numscored + 1
+          return
+        endif
       enddo
 
       numscored = numscored + 1
@@ -128,3 +151,4 @@ c       sum vdw terms
       end subroutine calc_chemscore
 
       end module chemscore
+
