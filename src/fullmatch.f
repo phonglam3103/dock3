@@ -3,6 +3,7 @@ c sph-sph matches in terms of only the distance tolerance, a la Ewing & Kuntz.
 c like all matching functions, this is called once per pair of initial spheres
 c results are added to nmatch, coml, comr, rot
 c 09/2011 RGC
+c OPTIMIZED 12/2024: Uses canonical ordering to avoid duplicate matches
 c 
       subroutine fullmatch(ligsphcount, ligsphcolor, ligcount, reccount, 
      &   recsphcolor, colortable, colormatch, disttol, disl, disr,
@@ -60,7 +61,8 @@ c     chemical matching (coloring) check - do this here to not waste time
           return  !color check failed, just quit and return
         endif
       endif
-      call sphsfromdists(ligcount, reccount, disl, disr, 
+c     Use sphsfromdists with canonical ordering (ligand indices > seed only)
+      call sphsfromdists(ligcount, reccount, disl, disr,
      &           maxlig, maxrec, disttol,
      &           colormatch, ligsphcolor, recsphcolor, 
      &           colortable, maxpts, maxcol, sphmatches)

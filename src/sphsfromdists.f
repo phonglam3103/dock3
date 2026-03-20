@@ -45,8 +45,9 @@ c function used to check color matching
       matchcount = matchcount + 1 !going to add one
       sphmatches(matchcount, 1) = ligstart !always add this pair
       sphmatches(matchcount, 2) = recstart !always add this pair
-      do curligpt = 1, maxlig !for all ligand spheres
-        if (curligpt .ne. ligstart) then !except the starting point
+c canonical ordering: only consider ligand indices > seed
+c this ensures each match is found exactly once (when min ligand index is seed)
+      do curligpt = ligstart + 1, maxlig !only indices > seed
           ligdist = disl(ligstart, curligpt) !dist from start to current, lig
           do currecpt = 1, maxrec !for all receptor spheres
             if (currecpt .ne. recstart) then !except the starting point
@@ -67,7 +68,6 @@ c function used to check color matching
               endif
             endif
           enddo
-        endif
       enddo
       !matchcount is now equal to how many added, sphmatches contains
       !pairs and then 0s once all pairs exhausted
