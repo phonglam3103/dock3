@@ -134,6 +134,13 @@ c    --- Benjamin Tingle 11/17, testing out signal handling & restart capabiliti
       integer loc
 
       integer signal ! need for portland group
+      
+      real :: val_db2_start, val_db2_end
+      real :: val_match_start, val_match_end
+      real :: val_score_start, val_score_end
+      real :: acc_db2, acc_match, acc_score
+      real :: total_timed
+      real :: perc_db2, perc_match, perc_score
 
 c   --- initialize restart variables (Ben) ---
 
@@ -143,6 +150,10 @@ c   --- initialize restart variables (Ben) ---
       ligc = 0
       db2c = 0
       iend = .false.
+      
+      acc_db2 = 0.0
+      acc_match = 0.0
+      acc_score = 0.0
 
 c   --- move our file handles to the spot indicated by the restart file
 
@@ -176,7 +187,7 @@ c   --- initialize signal handler (Ben) ---
 999   signalflag = 0
       SIGUSR1 = 10
       !ret = signal(SIGUSR1, signalhandler) ! for gfortran
-      ret = signal(SIGUSR1, signalhandler, -1) ! for portland group
+      ret = signal(SIGUSR1, signalhandler) ! for portland group
 
 c     --- initialize variables ---
       call allocate_ligscore(ligscore, options0%nsav, OUTDOCK)
@@ -253,9 +264,12 @@ c       check for interrupt signal at the start of each loop (Ben)
 
         total_iter = 0
 c       --- read a ligand structure from the dbase ---
-        call ligread2(db2lig, options0, 
+        call get_time(val_db2_start)
+         call ligread2(db2lig, options0, 
      &      iend, tcorr, tcolor, tcount, fdlig, 
      &      ligc, db2c, .false.) !read one hierarchy 
+         call get_time(val_db2_end)
+         acc_db2 = acc_db2 + (val_db2_end - val_db2_start) 
 
         ! add the current number of conformations in the hierarchy to
         ! calaculate the total nuber docked.  
@@ -322,6 +336,7 @@ c         initialize variables for subgraph generation.
           more_matches = .true. !always do at least once
           curdislim = options0%dislim !start at beginning no matter what
 
+          call get_time(val_match_start)
           do while (more_matches)
             do centrl = 1, tcount !use each ligand & receptor sphere as start
               do centrr = 1, spheres0%nsphr !seed point for generating spheres
@@ -385,7 +400,9 @@ c     &            spheres0%spcorr, db2lig%coords, tcount,
                 endif
               endif
             endif
-          enddo
+           enddo
+           call get_time(val_match_end)
+           acc_match = acc_match + (val_match_end - val_match_start)
           
           !calculating the total number of match or orientations obtained during docking run
           tot_match =  tot_match + match%nmatch
@@ -411,6 +428,7 @@ c part of clouds is to only score certain clusters of poses.. needs passed here
           !next line actually calls scoring function now that matches are
           !all generated. no global variables used anymore.
 c          write(6,*), "dockstatus before is",dock_status
+          call get_time(val_score_start)
           call calc_score_mol(dock_status, setstart, setend, 
      &        db2lig, options0, ligscore, ligscoreeach, grids0,
      &        vdwmap0, phimap0, recdes0, ligdes0, gist0, solvmap0, 
@@ -419,6 +437,8 @@ c          write(6,*), "dockstatus before is",dock_status
      &        MAXOR, db2lig%total_confs, db2lig%total_sets, 
      &        db2lig%total_atoms, db2lig%total_coords,
      &        MAXTYV) 
+           call get_time(val_score_end)
+           acc_score = acc_score + (val_score_end - val_score_start) 
           call get_time(time2)
           telaps = time2 - time1
 c          write(6,*), "dockstatus is",dock_status
@@ -778,9 +798,14 @@ c       flush buffer to OUTDOCK so user can see progress
      &       tot_sets 
         write (OUTDOCK, *) "total number of nodes (confs): ",
      &       tot_nodes 
-        write (OUTDOCK, *) "total number of complexes: ",
+        write(OUTDOCK, *) "total number of complexes: ",
      &       tot_complex 
-        write(OUTDOCK, *) "end of file encountered"
+
+        write(OUTDOCK, '(A, F8.3, A, F8.3, A, F8.3, A)') 
+     &       " DB2 parsing time (s):", acc_db2,
+     &       "; Matching time (s): ", acc_match,
+     &       "; Scoring time (s): ", acc_score,
+     &       "; end of file encountered"
       endif
       call gzclose(fdmol, istat) !close ligand output file
       if ((options0%minimize .eq. 1) .and.
