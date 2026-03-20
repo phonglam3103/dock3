@@ -380,7 +380,7 @@ c               It's a top hit! Reconstruct component scores now.
      &                   options0%solvscale
 
                       wholeps(tempset, temp_combo_num) = 
-     &                   wholevs(tempset, temp_combo_num) + 
+     &                   wholeps(tempset, temp_combo_num) + 
      &                   conf_scores(5, tempconf, temp_combo_num_grid) * 
      &                   options0%solvscale
 
