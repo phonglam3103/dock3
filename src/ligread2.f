@@ -10,6 +10,7 @@ c read procedure for new ligand database format db2 rgc
       use db2formats
       use filenums
       use spheres
+      use db2binary
 
       implicit none
 
@@ -127,6 +128,37 @@ c without E, then first M already read in.
         return
       endif
 
+c----------------------------------------------------------------------
+c Binary DB2 dispatch: use fast binary reader if enabled
+c----------------------------------------------------------------------
+      if (options0%use_binary_db2) then
+10      continue
+        call read_db2_binary(db2lig, options0, inputend,
+     &      rigid_heavy_coords, rigid_colors, rigid_heavy_count,
+     &      fdlig, ligc, db2c)
+        if (inputend) then
+          call gzclose(fdlig, inputstatus)
+          write(OUTDOCK, *) 'close the file: ', TRIM(options0%ligfil)
+          if (options0%sdi) then
+            inputend = .false.
+            db2c = db2c + 1
+            ligc = 0
+            read(SDIFILE, '(a255)', err=15, end=15) options0%ligfil
+            call gzopen(fdlig, 'r', options0%ligfil, inputstatus)
+            write(OUTDOCK, *) 'open the file: ', TRIM(options0%ligfil)
+            if (inputstatus .eq. 0) then
+              goto 10 ! Loop back to read first molecule of next file
+            endif
+15          continue
+            inputend = .true.
+            write(OUTDOCK, *) ' we reached the end of the 
+     &                split_database_index file'
+            write(OUTDOCK, *) "close SDIFILE"
+            close(SDIFILE)
+          endif
+        endif
+        return
+      endif
 
       do while (read_okay)
 c       write(OUTDOCK,*) "read_okay"

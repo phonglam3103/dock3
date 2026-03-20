@@ -34,6 +34,7 @@ c more defaults
       
       options0%use_gist = .false.
       options0%use_gist_val = ''
+      options0%use_binary_db2 = .false.  ! Binary DB2 format off by default
       options0%per_atom_scores = .true.
       options0%receptor_desolv = .false.
       options0%rec_des_r  = .false.

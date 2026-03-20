@@ -61,6 +61,7 @@
                             ! gist expects the confs to be in a certain
                             ! order
         character (len=255) :: use_gist_val ! string the should be yes or no.  
+        logical :: use_binary_db2 ! true to read binary DB2 format (db2bin)
         logical :: per_atom_scores !true if you want extra output that includes per atom scores for each ligand
         logical :: receptor_desolv !true if you want to read in and score using receptor desolvation grids
         logical :: rec_des_r,hrec_des_r ! true if you want to read in REC_DESOLV 

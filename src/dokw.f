@@ -297,6 +297,17 @@ c     jklyu, 20200223
           options0%use_gist = .false.
         endif
 
+      else if (keywrd .eq. 'use_binary_db2') then
+        call tolow(args)
+        if (nf .lt. 1) then
+          options0%use_binary_db2 = .false.
+        else if (args(1:1) .eq. 'y') then
+          options0%use_binary_db2 = .true.
+          write(OUTDOCK_h,*) 'Binary DB2 format enabled (db2bin.gz)'
+        else
+          options0%use_binary_db2 = .false.
+        endif
+
       else if (keywrd .eq. 'output_file_prefix') then
         if (nf .lt. 1) goto 940
         read(args,'(a255)') options0%outfil

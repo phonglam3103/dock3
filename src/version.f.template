@@ -6,7 +6,7 @@
       character (len=10), parameter :: SVNVERSION=''
 c adjusted by the makefile to the current svn version number.
 
-      character (len=10), parameter :: COMPDATE='20220107'
+      character (len=10), parameter :: COMPDATE='20260107'
 c     COMPDATE: Adjusted by the makefile to the date DOCK is compiled
 
       character (len=10), parameter :: ARCHSIZE='64,'
