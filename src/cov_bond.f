@@ -115,7 +115,7 @@ c     calculate the 'initial' Denavit-Hartenberg matrix to roatate
 c     around the bond angle v-u
 c     notice the dihedral angle is set to 0 is there are only 3 atoms 
 c     this is left in (and not zeroed) for clarity
-      call dh_mat(ang_vu,0,v_len,T0)
+      call dh_mat(ang_vu,0.0,v_len,T0)
 
 c     calculate the second (T1) Denavit-Hartenberg matrix to roatate
 c     around the bond angle v-covalent bond

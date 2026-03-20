@@ -184,7 +184,7 @@ c   --- initialize signal handler (Ben) ---
 999   signalflag = 0
       SIGUSR1 = 10
       !ret = signal(SIGUSR1, signalhandler) ! for gfortran
-      ret = signal(SIGUSR1, signalhandler, -1) ! for portland group
+      ret = signal(SIGUSR1, signalhandler) ! for portland group
 
 c     --- initialize variables ---
       call allocate_ligscore(ligscore, options0%nsav, OUTDOCK)
