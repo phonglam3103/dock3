@@ -21,7 +21,11 @@ import gzip
 import argparse
 import tarfile
 import io
-import os
+try:   
+    import zstandard
+except ImportError:
+    print("zstandard not installed, please install it using 'pip install zstandard'")
+    exit(1)
 from pathlib import Path
 
 # Binary format constants
@@ -29,10 +33,10 @@ DB2BIN_MAGIC = b'DB2BIN'
 DB2BIN_VERSION = 1
 
 
-def parse_db2_lines(lines):
+def parse_db2_stream(f_iter):
     """
-    Parse a list of text DB2 lines into structured data.
-    Returns a dict with all the arrays needed for binary format.
+    Parse an iterable of text DB2 lines (or decoded file stream) into structured data.
+    Yields a dict for each molecule to keep memory footprint low.
     """
     data = {
         'refcod': '', 'protcod': '', 'smiles': '', 'molname': '', 'arbitrary': [],
@@ -59,12 +63,12 @@ def parse_db2_lines(lines):
     set_lines_remaining = 0
     current_cluster = None
     cluster_match_remaining = 0
-    molecules = []
-
-    while line_idx < len(lines):
-        line = lines[line_idx].strip()
+    for raw_line in f_iter:
+        line = raw_line.strip()
+        if isinstance(line, bytes):
+            line = line.decode('utf-8', errors='replace')
+            
         if not line:
-            line_idx += 1
             continue
 
         section = line[0] if line else ''
@@ -193,7 +197,7 @@ def parse_db2_lines(lines):
                     data['clusters'].append(current_cluster)
                     current_cluster = None
         elif section == 'E':
-            molecules.append(data)
+            yield data
             data = {
                 'refcod': '', 'protcod': '', 'smiles': '', 'molname': '', 'arbitrary': [],
                 'total_atoms': 0, 'total_bonds': 0, 'total_coords': 0, 'total_confs': 0,
@@ -216,10 +220,6 @@ def parse_db2_lines(lines):
             current_set = None
             current_cluster = None
             cluster_match_remaining = 0
-
-        line_idx += 1
-
-    return molecules
 
 
 def write_single_molecule(f, data):
@@ -299,17 +299,16 @@ def write_single_molecule(f, data):
             for val in c['add_match_coords'][i]: f.write(struct.pack('f', val))
 
 
-def convert_lines_to_binary_bytes(lines, compress=False):
-    """Parse lines, write to binary, and return the bytes."""
-    molecules = parse_db2_lines(lines)
+def convert_stream_to_binary_bytes(f_iter, compress=False):
+    """Parse iterable stream, write to binary in-memory buffer, and return the bytes."""
     buf = io.BytesIO()
     
     if compress:
         with gzip.GzipFile(fileobj=buf, mode='wb') as gz:
-            for data in molecules:
+            for data in parse_db2_stream(f_iter):
                 write_single_molecule(gz, data)
     else:
-        for data in molecules:
+        for data in parse_db2_stream(f_iter):
             write_single_molecule(buf, data)
             
     return buf.getvalue()
@@ -322,39 +321,44 @@ def process_tarball(input_tar_path, output_tar_path):
     """
     print(f"Processing Archive: {input_tar_path} -> {output_tar_path}")
     
-    with tarfile.open(input_tar_path, 'r:gz') as in_tar, \
-         tarfile.open(output_tar_path, 'w:gz') as out_tar:
+    # Create ZstdCompressor
+    cctx = zstandard.ZstdCompressor(level=10)
+    
+    with tarfile.open(input_tar_path, 'r|gz') as in_tar, \
+        open(output_tar_path, 'wb') as out_f, \
+        cctx.stream_writer(out_f) as zstd_stream, \
+        tarfile.open(fileobj=zstd_stream, mode='w|') as out_tar:
          
-         for member in in_tar.getmembers():
-             if member.isfile() and (member.name.endswith('.db2') or member.name.endswith('.db2.gz')):
-                 f = in_tar.extractfile(member)
-                 if f is None:
-                     continue
-                 
-                 # Read contents
-                 is_gz = member.name.endswith('.gz')
-                 try:
-                     if is_gz:
-                         with gzip.open(f, 'rt') as gz_f:
-                             lines = gz_f.readlines()
-                         new_name = member.name.replace('.db2.gz', '.db2bin.gz')
-                     else:
-                         lines = f.read().decode('utf-8', errors='replace').splitlines()
-                         new_name = member.name.replace('.db2', '.db2bin')
-                         
-                     # Parse to bytes
-                     bin_data = convert_lines_to_binary_bytes(lines, compress=is_gz)
-                     
-                     # Add to new tar
-                     new_member = tarfile.TarInfo(name=new_name)
-                     new_member.size = len(bin_data)
-                     new_member.mtime = member.mtime
-                     
-                     out_tar.addfile(new_member, io.BytesIO(bin_data))
-                     # print(f"    - Converted in-memory: {member.name} -> {new_name}")
-                     
-                 except Exception as e:
-                     print(f"    - [ERROR] Failed converting inner file {member.name}: {e}")
+        for member in in_tar:
+            if member.isfile() and (member.name.endswith('.db2') or member.name.endswith('.db2.gz')):
+                # Skip if it is already a binary file (e.g. .db2bin.gz inside a .db2.tgz? edge case)
+                if member.name.endswith(('.db2bin', '.db2bin.gz')):
+                    continue
+                f = in_tar.extractfile(member)
+                if f is None:
+                    continue
+                
+                # Read contents
+                is_gz = member.name.endswith('.gz')
+                try:
+                    if is_gz:
+                        with gzip.open(f, 'rt') as gz_f:
+                            bin_data = convert_stream_to_binary_bytes(gz_f, compress=True)
+                        new_name = member.name.replace('.db2.gz', '.db2bin.gz')
+                    else:
+                        bin_data = convert_stream_to_binary_bytes(f, compress=False)
+                        new_name = member.name.replace('.db2', '.db2bin')
+                    
+                    # Add to new tar
+                    new_member = tarfile.TarInfo(name=new_name)
+                    new_member.size = len(bin_data)
+                    new_member.mtime = member.mtime
+                    
+                    out_tar.addfile(new_member, io.BytesIO(bin_data))
+                    # print(f"    - Converted in-memory: {member.name} -> {new_name}")
+                    
+                except Exception as e:
+                    print(f"    - [ERROR] Failed converting inner file {member.name}: {e}")
 
 
 def process_file(input_path, output_dir, relative_to=None):
@@ -378,9 +382,9 @@ def process_file(input_path, output_dir, relative_to=None):
     try:
         if filename.endswith(('.tgz', '.tar.gz')):
             if filename.endswith('.tar.gz'):
-                out_name = input_path.name[:-7] + ".db2bin.tgz" # .tar.gz -> .db2bin.tgz
+                out_name = input_path.name[:-7] + ".db2bin.tar.zst" # .tar.gz -> .db2bin.tar.zst
             else:
-                out_name = input_path.name[:-4] + ".db2bin.tgz" # .db2.tgz -> .db2bin.tgz
+                out_name = input_path.name[:-4] + ".db2bin.tar.zst" # .db2.tgz -> .db2bin.tar.zst
             final_out_path = out_path.with_name(out_name)
             process_tarball(input_path, final_out_path)
             
@@ -389,8 +393,7 @@ def process_file(input_path, output_dir, relative_to=None):
             final_out_path = out_path.with_name(out_name)
             
             with gzip.open(input_path, 'rt') as f:
-                lines = f.readlines()
-            bin_data = convert_lines_to_binary_bytes(lines, compress=True)
+                bin_data = convert_stream_to_binary_bytes(f, compress=True)
             with open(final_out_path, 'wb') as out_f:
                 out_f.write(bin_data)
                 
@@ -401,8 +404,7 @@ def process_file(input_path, output_dir, relative_to=None):
             final_out_path = out_path.with_name(out_name)
             
             with open(input_path, 'rt') as f:
-                lines = f.readlines()
-            bin_data = convert_lines_to_binary_bytes(lines, compress=False)
+                bin_data = convert_stream_to_binary_bytes(f, compress=False)
             with open(final_out_path, 'wb') as out_f:
                 out_f.write(bin_data)
                 
