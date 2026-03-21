@@ -5,9 +5,9 @@ ifeq ($(COMPILER), pgf)
 # Path needs to be to 64bit compiler to compile 64b targets 
 
 # According to PGF Documentation, -fastsse with pgf95 yields fastest results. (vs pgf90, 77, etc)
-F77 = pgf95
-CC = pgcc
-PROF = pgprof
+F77 = nvfortran
+CC = nvc
+PROF = nvprof
 GPROF = gprof
 
 

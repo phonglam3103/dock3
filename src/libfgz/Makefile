@@ -55,11 +55,11 @@ ifeq ($(COMPILER),pgf)
 #capable of 64b targets so that either 32b or 64b targets can be compiled.
 #Thus, use the compiler in .../linux86-x64/... and not /linux86/
 #PGPATH = /raid3/software/pgi/9.0.4/linux86-64/9.0-4/bin
-PGPATH = /nfs/soft/pgi/current/linux86-64/12.10/bin
+#PGPATH = /software/sse2/tetralith_el9/manual/nvhpc/23.7/Linux_x86_64/23.7/compilers/bin
 #/nfs/soft/pgi/v12_10/linux86-64/12.10/bin/pgf95
 #PGPATH = /mnt/nasapps/production/PGI/19.5/linux86-64-llvm/19.5/bin
-FC = $(PGPATH)/pgf95 
-CC = $(PGPATH)/pgcc 
+FC = nvfortran 
+CC = nvc 
 
 #Set these to the lowest common 64b and 32b architectures to optimize for.
 #ARCH64 = -tp penryn-64
